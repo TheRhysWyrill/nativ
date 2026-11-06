@@ -116,7 +116,27 @@ PY
       getv appimagetool-$AT_VER "https://github.com/AppImage/appimagetool/releases/download/$AT_VER/appimagetool-x86_64.AppImage" "$AT_SHA"
       getv appimage-runtime-$RT_VER "https://github.com/AppImage/type2-runtime/releases/download/$RT_VER/runtime-x86_64" "$RT_SHA"
       chmod +x "$DL/appimagetool-$AT_VER"
-      printf '#!/bin/sh\nexec "$APPDIR/launcher/nativ" "$@"\n' > "$I/AppRun"; chmod +x "$I/AppRun"   # (the AppImage's start: the launcher, which finds its folder)
+      # The AppImage's start: the launcher, and where the player's library and settings go. Beside the .AppImage, in
+      # ProjectNativ/, when it sits in a folder it may write to: copying the file and that folder together moves the whole
+      # install, and the .AppImage alone can be replaced on update. Left alone: an ATIV_DUMP or ATIV_PREFS the player set,
+      # a library an earlier install made in their app folder (nobody's games go missing behind them), and a read-only
+      # folder. The launcher keeps its settings in ATIV_PREFS and its library in ATIV_DUMP, and passes the library to the
+      # stages as ATIV_DUMP, so both sides agree (launcher/hub.cpp pref_dir, library_dir; pipeline/datadir.py).
+      cat > "$I/AppRun" <<'APPRUN'
+#!/bin/sh
+APPDIR=${APPDIR:-$(dirname "$(readlink -f "$0")")}
+if [ -n "${APPIMAGE:-}" ] && [ -z "${ATIV_DUMP:-}" ] && [ -z "${ATIV_PREFS:-}" ]; then
+	here=$(dirname "$(readlink -f "$APPIMAGE")")
+	shared=${XDG_DATA_HOME:-$HOME/.local/share}/ProjectNativ/Nativ
+	if [ ! -d "$shared" ] && [ -w "$here" ]; then
+		ATIV_PREFS=$here/ProjectNativ
+		ATIV_DUMP=$ATIV_PREFS/library
+		export ATIV_PREFS ATIV_DUMP
+	fi
+fi
+exec "$APPDIR/launcher/nativ" "$@"
+APPRUN
+      chmod +x "$I/AppRun"
       printf '[Desktop Entry]\nType=Application\nName=Project Nativ\nComment=Your PS Vita games, rebuilt natively\nExec=nativ\nIcon=project-nativ\nCategories=Game;\nTerminal=false\n' > "$I/project-nativ.desktop"
       cp "$I/assets/brand/png/icon-256.png" "$I/project-nativ.png"; rm -f "$I/Project Nativ.sh"
       ARCH=x86_64 "$DL/appimagetool-$AT_VER" --appimage-extract-and-run --no-appstream --runtime-file "$DL/appimage-runtime-$RT_VER" "$I" "$Z" >/dev/null;;

@@ -1,0 +1,143 @@
+name: Linux AppImage
+
+# The Linux download: dev/release.sh <tag> linux, run where it can be. An AppImage holds Linux programs and is made by
+# appimagetool, itself a Linux program, so a Windows (or Mac) machine can't make one -- everything here is the repository's
+# own path, unchanged: the toolchain from runtime/platform/linux/setup-toolchain.sh (cached), the install from
+# dev/linux-install.sh, the pins for appimagetool and its runtime from dev/release.sh.
+#
+# The player's library and settings stay beside the .AppImage, in ProjectNativ/, because the AppRun dev/release.sh writes
+# sets ATIV_DUMP and ATIV_PREFS. A library an earlier install made in the user's app folder (or ATIV_DUMP/ATIV_PREFS the
+# player set) is left where it is, so nobody's games go missing behind them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (vX.Y.Z): the install's version.txt and the file's name. Created at this commit when the tag doesn't exist yet."
+        required: true
+        type: string
+      releases_repo:
+        description: "owner/repo whose GitHub releases this install checks for updates (NATIV_RELEASES). Empty: this repository."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the tag release.sh insists on is what vitarecomp dist stamps into version.txt
+
+      - name: Check the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::version must be a release tag like v0.1.0, not '$VERSION'"
+            exit 1
+          fi
+
+      - name: Install the build machine's packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake ninja-build pkg-config nasm curl rsync zsh python3-venv \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev libxss-dev \
+            libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev \
+            libudev-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libspa-0.2-dev libdecor-0-dev \
+            libdbus-1-dev libusb-1.0-0-dev libwayland-dev libwayland-bin wayland-protocols
+
+      - name: Restore the Linux toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains/ativ-linux
+          key: ativ-linux-toolchain-${{ hashFiles('runtime/platform/linux/setup-toolchain.sh') }}
+
+      - name: Build the Linux toolchain (zig, SDL3, zlib, FFmpeg)
+        run: bash runtime/platform/linux/setup-toolchain.sh
+
+      - name: The pipeline's Python
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt
+
+      - name: Build the AppImage
+        env:
+          VERSION: ${{ inputs.version }}
+          REL: ${{ inputs.releases_repo || github.repository }}
+          NATIV_RELEASE_SKIP_BUILDS: "1"   # no games in this library: the release gate has nothing to build here
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            git checkout --detach "refs/tags/$VERSION"   # release.sh builds the tag alone
+          else
+            git tag "$VERSION"
+          fi
+          NATIV_RELEASES="$REL" bash dev/release.sh "$VERSION" linux
+
+      - name: Verify the AppImage
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          out="build/release/$VERSION"
+          app="$out/ProjectNativ-$VERSION-linux.AppImage"
+          test -s "$app"
+          chmod +x "$app"
+          "$app" --appimage-extract >/dev/null   # no FUSE on the runner's end: the same mount the player gets, unpacked
+          d=squashfs-root
+          test -x "$d/AppRun" && test -x "$d/launcher/nativ" && test -x "$d/python/bin/python3" && test -x "$d/toolchain/bin/cc"
+          test -f "$d/pipeline/vitarecomp.py"
+          test "$(cat "$d/version.txt")" = "$VERSION"
+          echo "payload: $(du -sh "$d" | cut -f1), version $VERSION"
+
+          # Where the library goes is AppRun's decision alone, so it runs here against a stub launcher: a real one needs a
+          # display and a GPU. Nothing of this repository's data folders is touched (HOME is a scratch folder).
+          t=$(mktemp -d)
+          mkdir -p "$t/appdir/launcher" "$t/images" "$t/home"
+          cp "$d/AppRun" "$t/appdir/AppRun"
+          printf '#!/bin/sh\nprintf "prefs=%%s\\ndump=%%s\\n" "$ATIV_PREFS" "$ATIV_DUMP"\n' > "$t/appdir/launcher/nativ"
+          chmod +x "$t/appdir/AppRun" "$t/appdir/launcher/nativ"
+          : > "$t/images/Nativ.AppImage"
+          starts() {   # starts <APPIMAGE or "">: what the launcher would be given
+            env -u ATIV_DUMP -u ATIV_PREFS -u XDG_DATA_HOME HOME="$t/home" APPIMAGE="$1" "$t/appdir/AppRun"
+          }
+          expect() {   # expect <what> <why>
+            [[ "$(starts "$2")" == "$1" ]] || { echo "::error::$3"; starts "$2"; exit 1; }
+          }
+          img="$t/images/Nativ.AppImage"
+          expect "prefs=$t/images/ProjectNativ
+          dump=$t/images/ProjectNativ/library" "$img" "a writable folder should put the library beside the .AppImage"
+          mkdir -p "$t/home/.local/share/ProjectNativ/Nativ"
+          expect "prefs=
+          dump=" "$img" "an existing shared library should stay where that install left it"
+          rmdir "$t/home/.local/share/ProjectNativ" "$t/home/.local/share"
+          chmod a-w "$t/images"
+          expect "prefs=
+          dump=" "$img" "a read-only folder should fall back to the user's app folder"
+          chmod u+w "$t/images"
+          expect "prefs=
+          dump=" "" "the payload run without APPIMAGE should keep the user's app folder"
+          expect "prefs=$t/home/own
+          dump=$t/home/own/library" "$img" "ATIV_PREFS=own ATIV_DUMP=own/library should be respected"
+          echo "the library beside the AppImage: ok"
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProjectNativ-AppImage-${{ inputs.version }}
+          path: |
+            build/release/${{ inputs.version }}/ProjectNativ-${{ inputs.version }}-linux.AppImage
+            build/release/${{ inputs.version }}/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0   # an AppImage's squashfs is compressed already
