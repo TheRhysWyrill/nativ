@@ -9,7 +9,10 @@
 # Run again over the same folder to update it (dist removes only what it wrote; python and toolchain are kept when current).
 # Needs the toolchain built here first ($ATIV_LINUX_TOOLCHAIN, default ~/toolchains/ativ-linux). The player's library
 # (dump/: games, firmware) is not part of it: the launcher's first run sets that up.
-set -euo pipefail
+set -Eeuo pipefail   # (-E: the ERR trap reaches inside functions and subshells too)
+# Every step names the line and command that failed, not only the exit status -- and on a build machine also as an
+# annotation (::error::), which a run's Annotations panel and its API show beside the log.
+trap 'rc=$?; msg="linux-install.sh: line $LINENO failed: $BASH_COMMAND (exit $rc)"; echo "$msg" >&2; [[ -z ${GITHUB_ACTIONS:-} ]] || echo "::error::$msg"' ERR
 PY_VER=3.13.17
 PY_REL=20261021
 PY_SHA=cbda6f7767884fc456860b11fd184391a9320cae00a86c0f49a1c7ac6e236f7a   # x86_64-unknown-linux-gnu-install_only
@@ -23,20 +26,25 @@ PYX=${PYTHON:-$ROOT/.venv/bin/python}; [[ -x $PYX ]] || PYX=python3
 "$PYX" "$ROOT/pipeline/vitarecomp.py" dist "$OUT"
 
 # the toolchain: what builds need, not its downloads, sources or build trees
+echo "install: the toolchain -> $OUT/toolchain"
 mkdir -p "$OUT/toolchain"
 for d in bin zig SDL3 zlib ffmpeg; do rsync -a --delete "$LT/$d/" "$OUT/toolchain/$d/"; done
 rm -rf "$OUT/toolchain/SDL3/lib/cmake" "$OUT/toolchain/SDL3/lib/pkgconfig" "$OUT/toolchain/ffmpeg/lib/pkgconfig"
 
 # Python
-if [[ ! -x $OUT/python/bin/python3 || "$("$OUT/python/bin/python3" -c 'import platform; print(platform.python_version())')" != "$PY_VER" ]]; then
-  DL=$LT/dl; A=cpython-$PY_VER+$PY_REL-x86_64-unknown-linux-gnu-install_only.tar.gz
+if [[ ! -x $OUT/python/bin/python3 || "$("$OUT/python/bin/python3" -c 'import platform; print(platform.python_version())' 2>/dev/null)" != "$PY_VER" ]]; then
+  echo "install: Python $PY_VER -> $OUT/python"
+  DL=$LT/dl; mkdir -p "$DL"; A=cpython-$PY_VER+$PY_REL-x86_64-unknown-linux-gnu-install_only.tar.gz
   verify() { local h; h=$(sha256sum "$1" 2>/dev/null | awk '{print $1}'); [[ -n $h ]] || h=$(shasum -a 256 "$1" | awk '{print $1}'); [[ $h == "$2" ]] && return; echo "checksum mismatch: $1 (expected $2, got $h)"; rm -f "$1"; exit 1; }
   [[ -f $DL/$A ]] || { curl -fL --retry 3 -o "$DL/$A.part" "https://github.com/astral-sh/python-build-standalone/releases/download/$PY_REL/$A" && verify "$DL/$A.part" "$PY_SHA" && mv -f "$DL/$A.part" "$DL/$A"; }
   rm -rf "$OUT/python"; tar xzf "$DL/$A" -C "$OUT"   # (unpacks as python/)
 fi
-"$OUT/python/bin/python3" -m pip install --quiet --disable-pip-version-check --no-warn-script-location -r "$ROOT/requirements.txt"
+echo "install: requirements.txt -> that Python"
+"$OUT/python/bin/python3" -m pip install --disable-pip-version-check --no-warn-script-location --progress-bar off --retries 5 -r "$ROOT/requirements.txt"
+"$OUT/python/bin/python3" -c 'import capstone, Crypto; print("install: capstone and pycryptodome import")'
 
 # the launcher, built with the install's own toolchain (no build machine's path in it)
+echo "install: the launcher, built with $OUT/toolchain"
 ATIV_LINUX_TOOLCHAIN=$OUT/toolchain "$ROOT/launcher/build.sh" "$OUT/launcher/nativ"
 cat > "$OUT/Project Nativ.sh" <<'EOF'
 #!/bin/sh

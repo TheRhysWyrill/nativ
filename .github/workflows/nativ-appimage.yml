@@ -5,9 +5,10 @@ name: Linux AppImage
 # own path, unchanged: the toolchain from runtime/platform/linux/setup-toolchain.sh (cached), the install from
 # dev/linux-install.sh, the pins for appimagetool and its runtime from dev/release.sh.
 #
-# The player's library and settings stay beside the .AppImage, in ProjectNativ/, because the AppRun dev/release.sh writes
-# sets ATIV_DUMP and ATIV_PREFS. A library an earlier install made in the user's app folder (or ATIV_DUMP/ATIV_PREFS the
-# player set) is left where it is, so nobody's games go missing behind them.
+# The player's library and settings go beside the .AppImage, in ProjectNativ/, because the AppRun dev/release.sh writes
+# sets ATIV_PREFS and ATIV_PORTABLE_LIBRARY (that default library; the launcher's Settings > Storage can point it
+# anywhere, and its choice in hub.ini wins). A library an earlier install made in the user's app folder (or an ATIV_DUMP
+# the player set) is left where it is, so nobody's games go missing behind them.
 
 on:
   workflow_dispatch:
@@ -102,35 +103,40 @@ jobs:
           echo "payload: $(du -sh "$d" | cut -f1), version $VERSION"
 
           # Where the library goes is AppRun's decision alone, so it runs here against a stub launcher: a real one needs a
-          # display and a GPU. Nothing of this repository's data folders is touched (HOME is a scratch folder).
+          # display and a GPU. The stub prints what it was handed on one line, fields separated by |. Nothing of this
+          # repository's data folders is touched (HOME is a scratch folder).
           t=$(mktemp -d)
           mkdir -p "$t/appdir/launcher" "$t/images" "$t/home"
           cp "$d/AppRun" "$t/appdir/AppRun"
-          printf '#!/bin/sh\nprintf "prefs=%%s\\ndump=%%s\\n" "$ATIV_PREFS" "$ATIV_DUMP"\n' > "$t/appdir/launcher/nativ"
+          cat > "$t/appdir/launcher/nativ" <<'STUB'
+          #!/bin/sh
+          printf 'prefs=%s|portable=%s|dump=%s\n' "${ATIV_PREFS-}" "${ATIV_PORTABLE_LIBRARY-}" "${ATIV_DUMP-}"
+          STUB
           chmod +x "$t/appdir/AppRun" "$t/appdir/launcher/nativ"
           : > "$t/images/Nativ.AppImage"
-          starts() {   # starts <APPIMAGE or "">: what the launcher would be given
-            env -u ATIV_DUMP -u ATIV_PREFS -u XDG_DATA_HOME HOME="$t/home" APPIMAGE="$1" "$t/appdir/AppRun"
-          }
-          expect() {   # expect <what> <why>
-            [[ "$(starts "$2")" == "$1" ]] || { echo "::error::$3"; starts "$2"; exit 1; }
-          }
           img="$t/images/Nativ.AppImage"
-          expect "prefs=$t/images/ProjectNativ
-          dump=$t/images/ProjectNativ/library" "$img" "a writable folder should put the library beside the .AppImage"
+          starts() {   # starts <APPIMAGE or ""> [NAME=VALUE...]: what AppRun hands the launcher
+            local i=$1; shift 1
+            env -u ATIV_DUMP -u ATIV_PREFS -u ATIV_PORTABLE_LIBRARY HOME="$t/home" "$@" APPIMAGE="$i" "$t/appdir/AppRun"
+          }
+          expect() {   # expect <line> <APPIMAGE> <why> [NAME=VALUE...]
+            local want=$1 i=$2 why=$3; shift 3
+            local got; got=$(starts "$i" "$@" || true)
+            [[ $got == "$want" ]] || { echo "::error::$why"; echo "expected: $want"; echo "got:      $got"; exit 1; }
+            echo "ok: $why"
+          }
+          expect "prefs=$t/images/ProjectNativ|portable=$t/images/ProjectNativ/library|dump=" "$img" \
+            "a writable folder puts the library and the settings beside the .AppImage"
           mkdir -p "$t/home/.local/share/ProjectNativ/Nativ"
-          expect "prefs=
-          dump=" "$img" "an existing shared library should stay where that install left it"
-          rmdir "$t/home/.local/share/ProjectNativ" "$t/home/.local/share"
+          expect "prefs=|portable=|dump=" "$img" "an existing shared library stays where that install left it"
+          rm -rf "$t/home/.local/share"
           chmod a-w "$t/images"
-          expect "prefs=
-          dump=" "$img" "a read-only folder should fall back to the user's app folder"
+          expect "prefs=|portable=|dump=" "$img" "a read-only folder keeps the user's app folder"
           chmod u+w "$t/images"
-          expect "prefs=
-          dump=" "" "the payload run without APPIMAGE should keep the user's app folder"
-          expect "prefs=$t/home/own
-          dump=$t/home/own/library" "$img" "ATIV_PREFS=own ATIV_DUMP=own/library should be respected"
-          echo "the library beside the AppImage: ok"
+          expect "prefs=|portable=|dump=" "" "the payload run without APPIMAGE keeps the user's app folder"
+          expect "prefs=$t/own|portable=|dump=$t/own/library" "$img" \
+            "a player's own ATIV_PREFS and ATIV_DUMP are left alone" ATIV_PREFS="$t/own" ATIV_DUMP="$t/own/library"
+          echo "where the library goes: ok"
 
       - name: Upload the AppImage
         uses: actions/upload-artifact@v4
