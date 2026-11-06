@@ -10,7 +10,10 @@
 set -e
 H=${0:A:h}; ROOT=${H:h}
 IMGUI=$ROOT/third_party/imgui; IMGUIOBJ=$ROOT/build/imgui/obj
-CXX=c++; SDL_CFLAGS=($(pkg-config --cflags sdl3 2>/dev/null)); SDL_LIBS=($(pkg-config --libs sdl3 2>/dev/null)); IMFLAGS=()
+CXX=c++; IMFLAGS=()
+# (pkg-config's own failure must not end the build: on a machine with no system SDL3 -- an install's toolchain brings its
+# own, and a build machine has none -- these came out empty and the assignment's status took set -e out without a word)
+SDL_CFLAGS=($(pkg-config --cflags sdl3 2>/dev/null || true)); SDL_LIBS=($(pkg-config --libs sdl3 2>/dev/null || true))
 LINK=(-lpthread); ROOTDEF=$ROOT
 if [[ $TARGET == windows ]]; then
   WT=${ATIV_WIN_TOOLCHAIN:-$HOME/toolchains/ativ-win}; SDLW=$WT/SDL3/x86_64-w64-mingw32; BIN=$WT/llvm-mingw/bin
