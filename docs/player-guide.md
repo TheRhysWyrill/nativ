@@ -42,6 +42,10 @@ Nativ keeps your games, builds and saves in its library, a folder apart from the
 touches them: `~/Library/Application Support/ProjectNativ/Nativ/library` on a Mac,
 `%LOCALAPPDATA%\ProjectNativ\Nativ\library` on Windows and `~/.local/share/ProjectNativ/Nativ/library` on Linux.
 
+On Linux the `.AppImage` is portable: a `ProjectNativ` folder appears beside it holding `library/`, your settings and the
+launcher's log, and the file and that folder move together. **Settings › Storage** puts the library somewhere else instead.
+It moves nothing, so a folder you choose starts empty; **Use the default** goes back.
+
 **Updating:** when a new version is out, the launcher says so above your library, with a link to its download page.
 On a Mac, drag the new Project Nativ into Applications and replace the old one; on Windows, replace the `ProjectNativ`
 folder with the new one; on Linux, the `.AppImage` with the new one. Your library stays where it is. Each game rebuilds once with the new version the next time
@@ -129,6 +133,8 @@ has a menu with that game's own options. Some worth knowing:
 - **Aspect ratio**: native, 21:9, 32:9 or your window's shape. The HUD keeps its own shape on wide screens.
 - **Frame rate**: 30 or 60. 60 is experimental: parts of a game timed in fixed 1/30 second steps can run fast.
 - **Field of view** (Killzone, Unit 13 and Uncharted).
+- **Library folder** (Storage): where your games, firmware, licences, builds and saves are kept. Beside the `.AppImage` by
+  default; choose anywhere else and Nativ remembers it.
 
 ## Online play
 

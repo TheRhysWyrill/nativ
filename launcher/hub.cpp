@@ -584,6 +584,7 @@ static void art_paths(Game &g) {
 /* ---- the native file dialogs (SDL3): their callback lands the chosen path in a field */
 static std::mutex g_pick_lock;
 static std::string *g_pick_target;
+static SDL_Window *g_win;   /* (the launcher's window: a dialog opened from a modal that isn't handed one) */
 static std::string g_pick_result; static bool g_pick_done;
 static void SDLCALL picked(void *, const char *const *files, int) {
 	std::lock_guard<std::mutex> l(g_pick_lock);
@@ -1073,8 +1074,20 @@ static void slider_row(const SetTarget &t, const char *label, const char *expl, 
 	if (ImGui::IsItemDeactivatedAfterEdit()) target_write(t, key, tget(t, key, ""));   /* (written once the drag ends) */
 }
 static bool g_settings_open; static int g_settings_tab; static Ini g_shared;
+static std::string g_lib_pick;   /* (the library folder dialog's answer, applied the frame it lands: pick_poll) */
 static bool g_setup_online = true;   /* setup's Play online, written with the name */
 static bool g_settings_writable = true;   /* (false in a screenshot run without ATIV_PREFS: it touches no one's settings) */
+
+static std::string library_dir(bool honour_env);   /* (defined below with the launcher's paths: the folder Settings chooses) */
+/* the library the player chose in Settings: saved in hub.ini ("" is the default), used from now on by this launcher and by
+ * the stages it runs. Nothing is copied or moved: what is in the old folder stays there, and a new one starts empty */
+static void library_use(std::string dir) {
+	while (dir.size() > 1 && (dir.back() == '/' || dir.back() == '\\') && !(dir.size() == 3 && dir[1] == ':')) dir.pop_back();   /* (a dialog's trailing separator, but not a root's) */
+	prefs_set("library", dir);
+	g_dump = library_dir(false);
+	set_env("ATIV_DUMP", g_dump);
+	library_scan();
+}
 
 /* the online name (runtime/net/np.c np_online_id makes the same): others see "ntv_" and the player's name, up to 10
  * letters, digits, '-' or '_' -- or, with none chosen, "ntv_" and a tag of six from this install's account ID (settings
@@ -1136,15 +1149,27 @@ static void settings_modal(void) {
 	if (!ImGui::BeginPopupModal("Settings", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	ui::heading("Settings", em * 1.4f);
-	ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are under Game settings on its card.");
+	ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are under Game settings on its card. Storage, on the last tab, is the launcher's own: where it keeps your games, builds and saves.");
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st"};
-	ui::segmented(tabs, 3, &g_settings_tab); tab_hint();
-	g_settings_tab = (g_settings_tab + tab_step() + 3) % 3;
+	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Storage##st"};
+	ui::segmented(tabs, 4, &g_settings_tab); tab_hint();
+	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
 	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), 0);
-	if (ui::rows_begin("shared")) {
+	if (g_settings_tab == 3) {
+		ui::heading("Library folder", em * 1.15f);
+		ui::muted_wrapped("Where Nativ keeps your games, firmware, licences, builds and saves. Nativ doesn't move anything: it looks in the folder you choose, so a folder with nothing in it shows an empty library (and the old one still has everything).");
+		ImGui::Dummy(ImVec2(0, em * 0.4f));
+		ui::muted_wrapped(("Now: " + g_dump).c_str());
+		ImGui::Dummy(ImVec2(0, em * 0.4f));
+		ImGui::BeginDisabled(g_task.running);   /* (a running build keeps writing into the folder it started in) */
+		if (ImGui::Button("Change…")) { g_lib_pick.clear(); pick_folder(g_win, &g_lib_pick); }
+		if (!g_prefs["library"].empty()) { ImGui::SameLine(); if (ImGui::Button("Use the default")) library_use(""); }
+		ImGui::EndDisabled();
+		ui::muted_wrapped(g_prefs["library"].empty() ? "The default: beside Nativ's own files (in an AppImage, the ProjectNativ folder next to the .AppImage)." : "Kept in Nativ's own settings, so updating Nativ leaves this folder as it is.");
+		if (!g_lib_pick.empty()) { library_use(g_lib_pick); g_lib_pick.clear(); }   /* (pick_poll put the dialog's answer there) */
+	} else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
 			ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
 			{	ImGui::PushID("render_scale");
@@ -1801,10 +1826,14 @@ static std::string find_root(void) {
 }
 
 /* the player's library (pipeline/datadir.py makes the same choice; the stages get this one as ATIV_DUMP): ATIV_DUMP, else
- * <root>/dump when it exists (a checkout, an install from before), else the platform's per-user data folder -- local, not
+ * the folder chosen in Settings (hub.ini's library), else ATIV_PORTABLE_LIBRARY (the folder beside an AppImage: a default,
+ * not a choice, so Settings wins over it), else <root>/dump when it exists (a checkout, an install from before), else the
+ * platform's per-user data folder -- local, not
  * roaming, on Windows: a game is gigabytes -- so an update replaces the install without touching what the player made */
-static std::string library_dir(void) {
-	if (const char *d = getenv("ATIV_DUMP")) if (*d) return d;
+static std::string library_dir(bool honour_env = true) {
+	if (honour_env) if (const char *d = getenv("ATIV_DUMP")) if (*d) return d;   /* (a test's, a script's: over everything) */
+	if (!g_prefs["library"].empty()) return g_prefs["library"];   /* (Settings: the folder the player chose) */
+	if (const char *p = getenv("ATIV_PORTABLE_LIBRARY")) if (*p) return p;   /* (an AppImage's folder beside it: a default only) */
 	if (exists(g_root + "/dump")) return g_root + "/dump";
 	const char *home = getenv("HOME"); std::string base;
 #ifdef _WIN32
@@ -1879,6 +1908,7 @@ int main(int, char **) {
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Project Nativ", "Project Nativ can't find the rest of its files.\n\nIf you opened it from inside the zip, extract the whole zip first (on Windows: right-click it, Extract All), then open Project Nativ from the extracted folder.", nullptr);
 		return 1;
 	}
+	prefs_load();   /* (before the library: the folder chosen in Settings is kept in it) */
 	g_dump = library_dir();
 	set_env("ATIV_DUMP", g_dump);   /* (the stages it runs: the same library whatever their own rule finds) */
 	const char *shot_path = getenv("ATIV_SHOT");
@@ -1911,6 +1941,7 @@ int main(int, char **) {
 	if (!win || !g_gpu || (!shot_path && !SDL_ClaimWindowForGPUDevice(g_gpu, win))) { fprintf(stderr, "window/GPU: %s\n", SDL_GetError()); return 1; }
 	if (!shot_path) SDL_SetGPUSwapchainParameters(g_gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
 	SDL_SetWindowMinimumSize(win, 420, 480);
+	g_win = win;
 	window_icon(win);
 
 	IMGUI_CHECKVERSION();
@@ -1925,7 +1956,7 @@ int main(int, char **) {
 	info.Device = g_gpu; info.ColorTargetFormat = shot_path ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : SDL_GetGPUSwapchainTextureFormat(g_gpu, win); info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
 	ImGui_ImplSDLGPU3_Init(&info);
 
-	prefs_load();
+	/* (the prefs were read at start, before the library: the folder Settings saves is one of them) */
 	g_settings_writable = !shot_path || getenv("ATIV_PREFS");
 	if (g_settings_writable) settings_migrate();   /* (a screenshot run touches no one's settings but a test folder's) */
 	set_env("RECOMP_SETTINGS_SHARED", shared_path());   /* the games it starts read the same shared file (runtime/core/main.c) */

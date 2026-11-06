@@ -79,6 +79,9 @@ The Windows player release includes its Python in `python/`.
 Your games, firmware, licences, builds and saves live in one library folder:
 
 - `dump/` inside a checkout, which git ignores;
+- in the Linux AppImage, `ProjectNativ/` beside the `.AppImage` (`library/`, your settings and the launcher's log), so
+  the download is portable: the file and that folder together are the whole install. **Settings › Storage** points it at
+  any folder instead; a library an earlier install already keeps in your data folder is left where it is;
 - otherwise your per-user data folder: `~/Library/Application Support/ProjectNativ/Nativ/library` on macOS, under
   `~/.local/share` on Linux and under `%LOCALAPPDATA%` on Windows;
 - or wherever `ATIV_DUMP` points.

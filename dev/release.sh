@@ -120,18 +120,18 @@ PY
       # ProjectNativ/, when it sits in a folder it may write to: copying the file and that folder together moves the whole
       # install, and the .AppImage alone can be replaced on update. Left alone: an ATIV_DUMP or ATIV_PREFS the player set,
       # a library an earlier install made in their app folder (nobody's games go missing behind them), and a read-only
-      # folder. The launcher keeps its settings in ATIV_PREFS and its library in ATIV_DUMP, and passes the library to the
-      # stages as ATIV_DUMP, so both sides agree (launcher/hub.cpp pref_dir, library_dir; pipeline/datadir.py).
-      cat > "$I/AppRun" <<'APPRUN'
+      # folder. The launcher keeps its settings in ATIV_PREFS; ATIV_PORTABLE_LIBRARY is only its default library, so a
+      # folder chosen in the launcher's Settings (hub.ini) wins over it. The stages get the library it settled on, ATIV_DUMP.
+      cat <<'APPRUN' | tr -d '\r' > "$I/AppRun"
 #!/bin/sh
 APPDIR=${APPDIR:-$(dirname "$(readlink -f "$0")")}
-if [ -n "${APPIMAGE:-}" ] && [ -z "${ATIV_DUMP:-}" ] && [ -z "${ATIV_PREFS:-}" ]; then
+if [ -n "${APPIMAGE:-}" ] && [ -z "${ATIV_DUMP:-}" ] && [ -z "${ATIV_PREFS:-}" ] && [ -z "${ATIV_PORTABLE_LIBRARY:-}" ]; then
 	here=$(dirname "$(readlink -f "$APPIMAGE")")
 	shared=${XDG_DATA_HOME:-$HOME/.local/share}/ProjectNativ/Nativ
 	if [ ! -d "$shared" ] && [ -w "$here" ]; then
 		ATIV_PREFS=$here/ProjectNativ
-		ATIV_DUMP=$ATIV_PREFS/library
-		export ATIV_PREFS ATIV_DUMP
+		ATIV_PORTABLE_LIBRARY=$ATIV_PREFS/library
+		export ATIV_PREFS ATIV_PORTABLE_LIBRARY
 	fi
 fi
 exec "$APPDIR/launcher/nativ" "$@"
